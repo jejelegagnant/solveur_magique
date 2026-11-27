@@ -88,7 +88,9 @@ def _assert_valid_solution(problem: SolverInput, output: SolverOutput) -> None:
 
     legal = problem.legal_rules
     min_rest_min = hours_to_minutes(
-        legal.min_reduced_rest_h if legal.min_reduced_rest_h is not None else legal.min_daily_rest_h
+        legal.min_daily_rest_h
+        if legal.reduced_rest_avg_window_days is not None or legal.min_reduced_rest_h is None
+        else legal.min_reduced_rest_h
     )
     max_span_min = hours_to_minutes(legal.max_daily_span_h)
     max_work_min = hours_to_minutes(legal.max_daily_work_h)
@@ -162,7 +164,7 @@ def _assert_valid_solution(problem: SolverInput, output: SolverOutput) -> None:
             emitted_hours = sorted(a.paid_hours for a in emitted)
             assert emitted_hours == expected_hours
 
-        # 3. Verify 0 hard unavailability violations.
+        # 3. Verify 0 hard unavailability violations (regular shifts and FIXED_SDE).
         for req in problem.availability_requests:
             if not req.approved or req.kind not in _HARD_UNAVAIL_KINDS:
                 continue
@@ -171,14 +173,20 @@ def _assert_valid_solution(problem: SolverInput, output: SolverOutput) -> None:
                 assert asgn_opt is None, (
                     f"Hard unavailability {req.kind} violated on {req.request_date}"
                 )
+                assert (req.employee_id, req.request_date) not in sde_by_emp_date, (
+                    f"Hard unavailability {req.kind} violated by FIXED_SDE on {req.request_date}"
+                )
             elif asgn_opt is not None:
                 assert asgn_opt.shift_template_id != req.shift_template_id
 
-        # 4. Verify 100% pinned cell adherence.
+        # 4. Verify 100% pinned cell adherence (including day-off pins vs FIXED_SDE).
         for pin in problem.pinned_cells:
             asgn_opt = regular_by_emp_date.get((pin.employee_id, pin.work_date))
             if pin.is_day_off:
                 assert asgn_opt is None, f"Day-off pin violated on {pin.work_date}"
+                assert (pin.employee_id, pin.work_date) not in sde_by_emp_date, (
+                    f"Day-off pin violated by FIXED_SDE on {pin.work_date}"
+                )
             else:
                 assert asgn_opt is not None, f"Shift pin missing on {pin.work_date}"
                 assert asgn_opt.shift_template_id == pin.shift_template_id
@@ -213,13 +221,12 @@ def _assert_valid_solution(problem: SolverInput, output: SolverOutput) -> None:
                         f"Same-day overlap for {emp.display_label} on {work_date}"
                     )
                 span_min = (ivs[-1][1] - ivs[0][0]) // _ONE_MIN
-                if reg is None or (emp.id, work_date) in approved_sdes_by_emp_date:
-                    assert span_min <= max_span_min, (
-                        f"Daily span {span_min}m > {max_span_min}m on {work_date}"
-                    )
-                    assert total_work_min <= max_work_min, (
-                        f"Daily work {total_work_min}m > {max_work_min}m on {work_date}"
-                    )
+                assert span_min <= max_span_min, (
+                    f"Daily span {span_min}m > {max_span_min}m on {work_date}"
+                )
+                assert total_work_min <= max_work_min, (
+                    f"Daily work {total_work_min}m > {max_work_min}m on {work_date}"
+                )
                 day_intervals[work_date] = ivs
 
             # Adjacent days inside the period.
@@ -1368,3 +1375,317 @@ def test_overlapping_same_day_fixed_sde_returns_infeasible() -> None:
     output = solve_schedule(problem)
     assert output.status == SolverStatus.INFEASIBLE
     assert len(output.conflict_cards) >= 1
+
+
+def test_olt2_enforces_11h_rest_conservatively_until_rolling_average_modeled() -> None:
+    """OLT2_CARE enforces 11h daily rest conservatively when 14d rolling average is configured."""
+    evening = ShiftTemplate(
+        id=uuid4(),
+        erp_code="EVE",
+        label="Evening 14:00-21:00",
+        segments=(ShiftSegment(start_time=time(14, 0), end_time=time(21, 0)),),
+        paid_duration_h=Decimal("7.00"),
+    )
+    morning = ShiftTemplate(
+        id=uuid4(),
+        erp_code="MORN",
+        label="Morning 07:00-14:00",
+        segments=(ShiftSegment(start_time=time(7, 0), end_time=time(14, 0)),),
+        paid_duration_h=Decimal("7.00"),
+    )
+    employees = _make_employees(1, pensums=(Decimal("50.00"),), corridor_h=Decimal("100.00"))
+    coverage = CoverageMatrix(
+        rules=(
+            CoverageRule(
+                shift_template_id=evening.id,
+                override_date=date(2026, 3, 10),
+                min_headcount=1,
+                target_headcount=1,
+            ),
+            CoverageRule(
+                shift_template_id=morning.id,
+                override_date=date(2026, 3, 11),
+                min_headcount=1,
+                target_headcount=1,
+            ),
+        )
+    )
+    # 21:00 -> 07:00 is 10h rest (< 11h min_daily_rest_h): must be forbidden under OLT2_CARE.
+    problem = _make_problem(
+        shift_templates=(evening, morning),
+        coverage_matrix=coverage,
+        employees=employees,
+        legal_rules=build_preset(LegalPresetType.OLT2_CARE),
+        allow_pouliste=False,
+    )
+    output = solve_schedule(problem)
+    assert output.status == SolverStatus.INFEASIBLE
+
+
+@pytest.mark.dst
+def test_dst_spring_forward_gap_shift_does_not_crash() -> None:
+    """A shift endpoint in the 02:00-02:59 spring-forward gap is ineligible, never crashing."""
+    gap_shift = ShiftTemplate(
+        id=uuid4(),
+        erp_code="GAP",
+        label="Early 02:30-10:30",
+        segments=(ShiftSegment(start_time=time(2, 30), end_time=time(10, 30)),),
+        paid_duration_h=Decimal("8.00"),
+    )
+    employees = _make_employees(2, pensums=(Decimal("50.00"),), corridor_h=Decimal("100.00"))
+    coverage = CoverageMatrix(
+        rules=(
+            CoverageRule(
+                shift_template_id=gap_shift.id,
+                override_date=date(2026, 3, 29),
+                min_headcount=1,
+                target_headcount=1,
+            ),
+            CoverageRule(
+                shift_template_id=gap_shift.id,
+                override_date=date(2026, 3, 30),
+                min_headcount=1,
+                target_headcount=1,
+            ),
+        )
+    )
+    problem = _make_problem(
+        year_month="2026-03",
+        shift_templates=(gap_shift,),
+        coverage_matrix=coverage,
+        employees=employees,
+        allow_pouliste=True,
+    )
+    output = solve_schedule(problem)
+    assert output.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+    sol = output.solutions[0]
+    gap_dates = {g.work_date for g in sol.pouliste_gaps}
+    assert date(2026, 3, 29) in gap_dates
+    assert date(2026, 3, 30) not in gap_dates
+
+    # Pinning an employee onto the nonexistent DST-gap shift returns INFEASIBLE cleanly.
+    pinned_problem = _make_problem(
+        year_month="2026-03",
+        shift_templates=(gap_shift,),
+        coverage_matrix=coverage,
+        employees=employees,
+        pinned_cells=(
+            PinnedCell(
+                employee_id=employees[0].id,
+                work_date=date(2026, 3, 29),
+                shift_template_id=gap_shift.id,
+            ),
+        ),
+        allow_pouliste=True,
+    )
+    assert solve_schedule(pinned_problem).status == SolverStatus.INFEASIBLE
+
+    # Shortened spring-forward night where unpaid_break_min exceeds elapsed UTC duration.
+    short_night = ShiftTemplate(
+        id=uuid4(),
+        erp_code="SN",
+        label="Short night 01:00-03:30",
+        segments=(ShiftSegment(start_time=time(1, 0), end_time=time(3, 30)),),
+        unpaid_break_min=120,
+        paid_duration_h=None,
+    )
+    short_cov = CoverageMatrix(
+        rules=(
+            CoverageRule(
+                shift_template_id=short_night.id,
+                override_date=date(2026, 3, 29),
+                min_headcount=1,
+                target_headcount=1,
+            ),
+        )
+    )
+    short_problem = _make_problem(
+        year_month="2026-03",
+        shift_templates=(short_night,),
+        coverage_matrix=short_cov,
+        employees=employees,
+        allow_pouliste=True,
+    )
+    short_out = solve_schedule(short_problem)
+    assert short_out.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE)
+    assert len(short_out.solutions[0].pouliste_gaps) == 1
+
+
+@pytest.mark.dst
+def test_dst_gap_fixed_sde_infeasible_and_invalid_prior_record_error() -> None:
+    """DST-gap FIXED_SDE yields INFEASIBLE; DST-gap PriorDayRecord yields SolverStatus.ERROR."""
+    _, m1, _, _ = _make_standard_shifts()
+    employees = _make_employees(1, pensums=(Decimal("50.00"),), corridor_h=Decimal("100.00"))
+    empty_cov = CoverageMatrix(rules=())
+
+    bad_sde_problem = _make_problem(
+        year_month="2026-03",
+        shift_templates=(m1,),
+        coverage_matrix=empty_cov,
+        employees=employees,
+        availability_requests=(
+            AvailabilityRequest(
+                id=uuid4(),
+                employee_id=employees[0].id,
+                request_date=date(2026, 3, 29),
+                kind=RequestKind.FIXED_SDE,
+                custom_interval=ShiftSegment(start_time=time(2, 30), end_time=time(4, 0)),
+                sde_label="SDE/GAP",
+                approved=True,
+            ),
+        ),
+        allow_pouliste=True,
+    )
+    assert solve_schedule(bad_sde_problem).status == SolverStatus.INFEASIBLE
+
+    # April 2026 with a prior-month record on 2026-03-29 (within 7-day boundary) at 02:30.
+    bad_prior_problem = _make_problem(
+        year_month="2026-04",
+        shift_templates=(m1,),
+        coverage_matrix=empty_cov,
+        employees=employees,
+        prior_month_boundary=PriorMonthBoundary(
+            days=(
+                PriorDayRecord(
+                    employee_id=employees[0].id,
+                    work_date=date(2026, 3, 29),
+                    segments=(ShiftSegment(start_time=time(2, 30), end_time=time(6, 0)),),
+                    paid_hours=Decimal("3.50"),
+                ),
+            )
+        ),
+        allow_pouliste=True,
+    )
+    err_out = solve_schedule(bad_prior_problem)
+    assert err_out.status == SolverStatus.ERROR
+    assert err_out.error_message is not None
+    assert "prior-month boundary" in err_out.error_message
+
+
+def test_fixed_sde_conflicts_with_hard_unavail_and_pinned_day_off() -> None:
+    """Approved FIXED_SDE colliding with VACATION_V or a pinned day off returns INFEASIBLE."""
+    _, m1, _, _ = _make_standard_shifts()
+    employees = _make_employees(1, pensums=(Decimal("50.00"),), corridor_h=Decimal("100.00"))
+    empty_cov = CoverageMatrix(rules=())
+    sde_req = AvailabilityRequest(
+        id=uuid4(),
+        employee_id=employees[0].id,
+        request_date=date(2026, 3, 12),
+        kind=RequestKind.FIXED_SDE,
+        custom_interval=ShiftSegment(start_time=time(9, 0), end_time=time(11, 0)),
+        sde_label="SDE/09/11",
+        approved=True,
+    )
+    vac_req = AvailabilityRequest(
+        id=uuid4(),
+        employee_id=employees[0].id,
+        request_date=date(2026, 3, 12),
+        kind=RequestKind.VACATION_V,
+        approved=True,
+    )
+
+    vac_conflict = _make_problem(
+        shift_templates=(m1,),
+        coverage_matrix=empty_cov,
+        employees=employees,
+        availability_requests=(sde_req, vac_req),
+        allow_pouliste=True,
+    )
+    assert solve_schedule(vac_conflict).status == SolverStatus.INFEASIBLE
+
+    pin_conflict = _make_problem(
+        shift_templates=(m1,),
+        coverage_matrix=empty_cov,
+        employees=employees,
+        availability_requests=(sde_req,),
+        pinned_cells=(
+            PinnedCell(
+                employee_id=employees[0].id,
+                work_date=date(2026, 3, 12),
+                is_day_off=True,
+            ),
+        ),
+        allow_pouliste=True,
+    )
+    assert solve_schedule(pin_conflict).status == SolverStatus.INFEASIBLE
+
+
+def test_single_event_sde_and_standalone_shift_enforce_daily_span_and_work_limits() -> None:
+    """Single-event SDEs and standalone regular shifts enforce daily span and work limits."""
+    _, m1, _, _ = _make_standard_shifts()
+    employees = _make_employees(1, pensums=(Decimal("50.00"),), corridor_h=Decimal("100.00"))
+    empty_cov = CoverageMatrix(rules=())
+
+    # Lone 15h FIXED_SDE violates max_daily_span_h=14.0h and max_daily_work_h=12.5h.
+    long_sde = AvailabilityRequest(
+        id=uuid4(),
+        employee_id=employees[0].id,
+        request_date=date(2026, 3, 12),
+        kind=RequestKind.FIXED_SDE,
+        custom_interval=ShiftSegment(start_time=time(6, 0), end_time=time(21, 0)),
+        sde_label="SDE/LONG",
+        approved=True,
+    )
+    long_sde_problem = _make_problem(
+        shift_templates=(m1,),
+        coverage_matrix=empty_cov,
+        employees=employees,
+        availability_requests=(long_sde,),
+        allow_pouliste=True,
+    )
+    assert solve_schedule(long_sde_problem).status == SolverStatus.INFEASIBLE
+
+    # Standalone split shift with 15h span (06:00-08:00 + 16:00-21:00) > 14h max_daily_span_h.
+    over_span_shift = ShiftTemplate(
+        id=uuid4(),
+        erp_code="SPAN15",
+        label="Split 15h span",
+        segments=(
+            ShiftSegment(start_time=time(6, 0), end_time=time(8, 0)),
+            ShiftSegment(start_time=time(16, 0), end_time=time(21, 0)),
+        ),
+        paid_duration_h=Decimal("7.00"),
+    )
+    span_cov = CoverageMatrix(
+        rules=(
+            CoverageRule(
+                shift_template_id=over_span_shift.id,
+                override_date=date(2026, 3, 12),
+                min_headcount=1,
+                target_headcount=1,
+            ),
+        )
+    )
+    span_problem = _make_problem(
+        shift_templates=(over_span_shift,),
+        coverage_matrix=span_cov,
+        employees=employees,
+        allow_pouliste=False,
+    )
+    assert solve_schedule(span_problem).status == SolverStatus.INFEASIBLE
+
+    # Standalone 13h paid shift (07:00-20:00) > 12.5h max_daily_work_h (within 14h span).
+    over_work_shift = ShiftTemplate(
+        id=uuid4(),
+        erp_code="WORK13",
+        label="13h work",
+        segments=(ShiftSegment(start_time=time(7, 0), end_time=time(20, 0)),),
+        paid_duration_h=Decimal("13.00"),
+    )
+    work_cov = CoverageMatrix(
+        rules=(
+            CoverageRule(
+                shift_template_id=over_work_shift.id,
+                override_date=date(2026, 3, 12),
+                min_headcount=1,
+                target_headcount=1,
+            ),
+        )
+    )
+    work_problem = _make_problem(
+        shift_templates=(over_work_shift,),
+        coverage_matrix=work_cov,
+        employees=employees,
+        allow_pouliste=False,
+    )
+    assert solve_schedule(work_problem).status == SolverStatus.INFEASIBLE

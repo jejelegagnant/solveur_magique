@@ -46,7 +46,6 @@ from solver_core.time_utils import (
     minutes_to_hours,
     night_window_overlap_minutes,
     paid_minutes,
-    rest_minutes_between,
     segment_utc_interval,
     segments_utc_intervals,
 )
@@ -91,6 +90,7 @@ class _PrecomputedContext:
     shift_intervals: dict[tuple[int, int], tuple[tuple[datetime, datetime], ...]]
     shift_paid_min: dict[tuple[int, int], int]
     shift_night_supp_min: dict[tuple[int, int], int]
+    ineligible_day_shifts: frozenset[tuple[int, int]]
     coverage_reqs: dict[tuple[int, int], tuple[int, int]]
     min_rest_min: int
     max_daily_span_min: int
@@ -106,6 +106,7 @@ class _PrecomputedContext:
     hard_unavail_shifts: tuple[set[tuple[int, int]], ...]
     prior_rest_forbidden: set[tuple[int, int, int]]
     hard_infeasible: bool
+    precompute_error: str | None
 
 
 def _compute_night_supplement_minutes(night_min: int, bonus_pct: Decimal) -> int:
@@ -239,8 +240,12 @@ def _precompute_context(problem: SolverInput) -> _PrecomputedContext:
     break_warnings = _collect_break_warnings(problem.shift_templates, period_dates)
 
     legal = problem.legal_rules
+    # Conservatively enforce full min_daily_rest_h whenever reduced rest requires a rolling
+    # averaging window (encoded in Issue #4) so no illegal consecutive reduced-rest pairs occur.
     min_rest_min = hours_to_minutes(
-        legal.min_reduced_rest_h if legal.min_reduced_rest_h is not None else legal.min_daily_rest_h
+        legal.min_daily_rest_h
+        if legal.reduced_rest_avg_window_days is not None or legal.min_reduced_rest_h is None
+        else legal.min_reduced_rest_h
     )
     max_daily_span_min = hours_to_minutes(legal.max_daily_span_h)
     max_daily_work_min = hours_to_minutes(legal.max_daily_work_h)
@@ -248,37 +253,48 @@ def _precompute_context(problem: SolverInput) -> _PrecomputedContext:
     shift_intervals: dict[tuple[int, int], tuple[tuple[datetime, datetime], ...]] = {}
     shift_paid_min: dict[tuple[int, int], int] = {}
     shift_night_supp_min: dict[tuple[int, int], int] = {}
+    ineligible_day_shifts: set[tuple[int, int]] = set()
     coverage_reqs: dict[tuple[int, int], tuple[int, int]] = {}
 
     for d_idx, work_date in enumerate(period_dates):
         day_type = classify_day_type(work_date, public_holidays)
         for s_idx, shift in enumerate(problem.shift_templates):
             key = (d_idx, s_idx)
-            shift_intervals[key] = segments_utc_intervals(work_date, shift.segments)
-            if shift.paid_duration_h is not None:
-                shift_paid_min[key] = hours_to_minutes(shift.paid_duration_h)
-            else:
-                shift_paid_min[key] = paid_minutes(
-                    work_date, shift.segments, shift.unpaid_break_min
+            coverage_reqs[key] = problem.coverage_matrix.resolve(shift.id, work_date, day_type)
+            try:
+                ivs = segments_utc_intervals(work_date, shift.segments)
+                if shift.paid_duration_h is not None:
+                    paid_min = hours_to_minutes(shift.paid_duration_h)
+                else:
+                    paid_min = paid_minutes(work_date, shift.segments, shift.unpaid_break_min)
+                night_min = night_window_overlap_minutes(
+                    work_date,
+                    shift.segments,
+                    legal.night_window_start,
+                    legal.night_window_end,
                 )
+            except ValueError:
+                ineligible_day_shifts.add(key)
+                continue
 
-            night_min = night_window_overlap_minutes(
-                work_date,
-                shift.segments,
-                legal.night_window_start,
-                legal.night_window_end,
-            )
+            shift_intervals[key] = ivs
+            shift_paid_min[key] = paid_min
             shift_night_supp_min[key] = _compute_night_supplement_minutes(
                 night_min,
                 legal.night_bonus_pct,
             )
-            coverage_reqs[key] = problem.coverage_matrix.resolve(shift.id, work_date, day_type)
+
+            shift_span_min = (ivs[-1][1] - ivs[0][0]) // _ONE_MINUTE_DELTA
+            if shift_span_min > max_daily_span_min or paid_min > max_daily_work_min:
+                ineligible_day_shifts.add(key)
 
     hard_unavail_days: tuple[set[int], ...] = tuple(set() for _ in range(num_emps))
     hard_unavail_shifts: tuple[set[tuple[int, int]], ...] = tuple(set() for _ in range(num_emps))
     approved_vacation_dates: tuple[set[date], ...] = tuple(set() for _ in range(num_emps))
     employee_sdes: tuple[dict[int, list[_SdeEvent]], ...] = tuple({} for _ in range(num_emps))
     sde_prefix = problem.team.non_shift_codes.sde_prefix
+    hard_infeasible = False
+    precompute_error: str | None = None
 
     for req in problem.availability_requests:
         if not req.approved:
@@ -295,14 +311,18 @@ def _precompute_context(problem: SolverInput) -> _PrecomputedContext:
                 hard_unavail_shifts[e_idx].add((d_idx, shift_id_to_idx[req.shift_template_id]))
         elif req.kind == RequestKind.FIXED_SDE and req.custom_interval is not None:
             seg = req.custom_interval
-            sde_iv = segment_utc_interval(req.request_date, seg)
+            try:
+                sde_iv = segment_utc_interval(req.request_date, seg)
+                sde_night_min = night_window_overlap_minutes(
+                    req.request_date,
+                    (seg,),
+                    legal.night_window_start,
+                    legal.night_window_end,
+                )
+            except ValueError:
+                hard_infeasible = True
+                continue
             sde_elapsed_min = (sde_iv[1] - sde_iv[0]) // _ONE_MINUTE_DELTA
-            sde_night_min = night_window_overlap_minutes(
-                req.request_date,
-                (seg,),
-                legal.night_window_start,
-                legal.night_window_end,
-            )
             sde_night_supp_min = _compute_night_supplement_minutes(
                 sde_night_min,
                 legal.night_bonus_pct,
@@ -316,23 +336,26 @@ def _precompute_context(problem: SolverInput) -> _PrecomputedContext:
             )
             employee_sdes[e_idx].setdefault(d_idx, []).append(event)
 
-    hard_infeasible = False
-
-    # Check same-day and adjacent-day FIXED_SDE overlap, span, work, and rest violations.
+    # Check same-day and adjacent-day FIXED_SDE overlap, unavailability, span, work, and rest.
     for e_idx in range(num_emps):
         sdes_by_day = employee_sdes[e_idx]
+        unavail_days = hard_unavail_days[e_idx]
         for d_idx, day_sdes in sdes_by_day.items():
-            if len(day_sdes) > 1:
-                sorted_sdes = sorted(day_sdes, key=lambda ev: ev.interval[0])
+            if d_idx in unavail_days:
+                hard_infeasible = True
+
+            sorted_sdes = sorted(day_sdes, key=lambda ev: ev.interval[0])
+            if len(sorted_sdes) > 1:
                 for idx in range(len(sorted_sdes) - 1):
                     if intervals_overlap(sorted_sdes[idx].interval, sorted_sdes[idx + 1].interval):
                         hard_infeasible = True
-                combined_start = sorted_sdes[0].interval[0]
-                combined_end = max(ev.interval[1] for ev in sorted_sdes)
-                if (combined_end - combined_start) // _ONE_MINUTE_DELTA > max_daily_span_min:
-                    hard_infeasible = True
-                if sum(ev.elapsed_min for ev in sorted_sdes) > max_daily_work_min:
-                    hard_infeasible = True
+
+            combined_start = sorted_sdes[0].interval[0]
+            combined_end = max(ev.interval[1] for ev in sorted_sdes)
+            if (combined_end - combined_start) // _ONE_MINUTE_DELTA > max_daily_span_min:
+                hard_infeasible = True
+            if sum(ev.elapsed_min for ev in sorted_sdes) > max_daily_work_min:
+                hard_infeasible = True
 
             next_sdes = sdes_by_day.get(d_idx + 1)
             if not next_sdes:
@@ -349,18 +372,22 @@ def _precompute_context(problem: SolverInput) -> _PrecomputedContext:
         if not rec.segments:
             continue
         e_idx = emp_id_to_idx[rec.employee_id]
-        prior_ivs = segments_utc_intervals(rec.work_date, rec.segments)
+        try:
+            prior_ivs = segments_utc_intervals(rec.work_date, rec.segments)
+        except ValueError as exc:
+            precompute_error = (
+                f"Invalid prior-month boundary record for employee {rec.employee_id} "
+                f"on {rec.work_date.isoformat()}: {exc}"
+            )
+            break
         prior_end = prior_ivs[-1][1]
 
         for d_idx in boundary_check_days:
-            work_date = period_dates[d_idx]
-            for s_idx, shift in enumerate(problem.shift_templates):
-                rest_min = rest_minutes_between(
-                    rec.work_date,
-                    rec.segments,
-                    work_date,
-                    shift.segments,
-                )
+            for s_idx in range(len(problem.shift_templates)):
+                shift_ivs = shift_intervals.get((d_idx, s_idx))
+                if shift_ivs is None:
+                    continue
+                rest_min = (shift_ivs[0][0] - prior_end) // _ONE_MINUTE_DELTA
                 if rest_min < min_rest_min:
                     prior_rest_forbidden.add((e_idx, d_idx, s_idx))
 
@@ -374,6 +401,8 @@ def _precompute_context(problem: SolverInput) -> _PrecomputedContext:
         e_idx = emp_id_to_idx[pin.employee_id]
         d_idx = date_to_idx[pin.work_date]
         pinned_by_emp_day[(e_idx, d_idx)] = pin
+        if pin.is_day_off and d_idx in employee_sdes[e_idx]:
+            hard_infeasible = True
         if pin.shift_template_id is not None:
             pinned_shift_info[(e_idx, d_idx)] = (
                 shift_id_to_idx[pin.shift_template_id],
@@ -409,6 +438,7 @@ def _precompute_context(problem: SolverInput) -> _PrecomputedContext:
         shift_intervals=shift_intervals,
         shift_paid_min=shift_paid_min,
         shift_night_supp_min=shift_night_supp_min,
+        ineligible_day_shifts=frozenset(ineligible_day_shifts),
         coverage_reqs=coverage_reqs,
         min_rest_min=min_rest_min,
         max_daily_span_min=max_daily_span_min,
@@ -424,6 +454,7 @@ def _precompute_context(problem: SolverInput) -> _PrecomputedContext:
         hard_unavail_shifts=hard_unavail_shifts,
         prior_rest_forbidden=prior_rest_forbidden,
         hard_infeasible=hard_infeasible,
+        precompute_error=precompute_error,
     )
 
 
@@ -696,10 +727,25 @@ def solve_schedule(
     *,
     weights: ObjectiveWeights | None = None,
 ) -> SolverOutput:
-    """Build and solve the discrete shift-scheduling CP-SAT model (FR-027)."""
+    """Build and solve the discrete shift-scheduling CP-SAT model (FR-027).
+
+    ``problem.public_holidays`` is treated as the authoritative explicit holiday
+    snapshot for the period (callers can populate it via ``get_cantonal_holidays``
+    or pass custom overrides).
+    """
     start_time = perf_counter()
     active_weights = weights if weights is not None else ObjectiveWeights()
     ctx = _precompute_context(problem)
+
+    if ctx.precompute_error is not None:
+        duration_ms = max(0, round((perf_counter() - start_time) * 1000))
+        return SolverOutput(
+            period_id=problem.period_id,
+            status=SolverStatus.ERROR,
+            solve_duration_ms=duration_ms,
+            break_warnings=ctx.break_warnings,
+            error_message=ctx.precompute_error,
+        )
 
     num_days = len(ctx.period_dates)
     num_emps = len(problem.employees)
@@ -744,6 +790,7 @@ def solve_schedule(
                 _, target_hc = ctx.coverage_reqs[(d_idx, s_idx)]
                 statically_forbidden = (
                     not qualified[e_idx][s_idx]
+                    or (d_idx, s_idx) in ctx.ineligible_day_shifts
                     or d_idx in unavail_days
                     or (d_idx, s_idx) in unavail_shifts
                     or (e_idx, d_idx, s_idx) in ctx.prior_rest_forbidden
@@ -797,11 +844,15 @@ def solve_schedule(
     for d_idx in range(num_days - 1):
         bad_groups: dict[frozenset[int], list[int]] = {}
         for s2 in range(num_shifts):
-            next_start = ctx.shift_intervals[(d_idx + 1, s2)][0][0]
+            next_ivs = ctx.shift_intervals.get((d_idx + 1, s2))
+            if next_ivs is None:
+                continue
+            next_start = next_ivs[0][0]
             bad_prev = frozenset(
                 s1
                 for s1 in range(num_shifts)
-                if (next_start - ctx.shift_intervals[(d_idx, s1)][-1][1]) // _ONE_MINUTE_DELTA
+                if (d_idx, s1) in ctx.shift_intervals
+                and (next_start - ctx.shift_intervals[(d_idx, s1)][-1][1]) // _ONE_MINUTE_DELTA
                 < ctx.min_rest_min
             )
             if bad_prev:
@@ -972,63 +1023,44 @@ def solve_schedule(
         u_vars_all.append(u_var)
         u_gcds_all.append(coeff_gcd)
 
-        def _add_exact_abs_var(
-            var_name: str,
-            const_off: int,
-            *,
-            _u_var: Any = u_var,
-            _g: int = coeff_gcd,
-            _min_u: int = min_u,
-            _max_u: int = max_u,
-        ) -> tuple[Any, int]:
-            """Create |u * g + const_off| with exact integer domain LB and convex-hull secant."""
-            k_floor = (-const_off) // _g
-            candidates = (
-                u for u in (_min_u, _max_u, k_floor, k_floor + 1) if _min_u <= u <= _max_u
-            )
-            min_abs = min(abs(u * _g + const_off) for u in candidates)
-            max_abs = max(abs(_min_u * _g + const_off), abs(_max_u * _g + const_off))
-            abs_var = model.new_int_var(min_abs, max_abs, var_name)
-            model.add_abs_equality(abs_var, _u_var * _g + const_off)
-            y0 = -(k_floor * _g + const_off)
-            y1 = (k_floor + 1) * _g + const_off
-            if y0 > 0 and y1 > 0:
-                model.add(abs_var >= y0 + (y1 - y0) * (_u_var - k_floor))
-            return abs_var, max_abs
-
+        # Exact combined integer convex hull for all 3 hour-balance objective terms on u_var.
+        # Since f(u) = c_d*|u*g+d0| + c_e*|u*g+e0| + c_b*max(0, |u*g+e0|-C) is convex on Z,
+        # its exact lower envelope over u in [min_u, max_u] needs only one linear inequality
+        # per distinct slope (typically 3-6 facets) with zero Boolean reification variables.
         delta_off = sde_total_min - target_min
-        if monthly_delta_coeff > 0:
-            abs_delta, _ = _add_exact_abs_var(f"abs_delta_{e_idx}", delta_off)
-            obj_vars.append(abs_delta)
-            obj_coeffs.append(monthly_delta_coeff)
-
         ending_off = starting_solde_min + sde_total_min - target_min
-        max_abs_ending = max(
-            abs(min_u * coeff_gcd + ending_off),
-            abs(max_u * coeff_gcd + ending_off),
-        )
-        if ending_solde_coeff > 0:
-            abs_ending, max_abs_ending = _add_exact_abs_var(f"abs_ending_{e_idx}", ending_off)
-            obj_vars.append(abs_ending)
-            obj_coeffs.append(ending_solde_coeff)
+        if monthly_delta_coeff > 0 or ending_solde_coeff > 0 or breach_coeff > 0:
+            cost_vals: list[int] = []
+            for u_val in range(min_u, max_u + 1):
+                d_abs = abs(u_val * coeff_gcd + delta_off)
+                e_abs = abs(u_val * coeff_gcd + ending_off)
+                e_breach = max(0, e_abs - corridor_min)
+                cost_vals.append(
+                    monthly_delta_coeff * d_abs
+                    + ending_solde_coeff * e_abs
+                    + breach_coeff * e_breach
+                )
 
-        max_breach = max(0, max_abs_ending - corridor_min)
-        if breach_coeff > 0 and max_breach > 0:
-            ending_breach = model.new_int_var(0, max_breach, f"ending_breach_{e_idx}")
-            ending_expr = u_var * coeff_gcd + ending_off
-            model.add(ending_breach >= ending_expr - corridor_min)
-            model.add(ending_breach >= -ending_expr - corridor_min)
-            # Exact integer convex-hull secant cuts across the ±corridor_min kinks.
-            k_pos = (corridor_min - ending_off) // coeff_gcd
-            b_pos = (k_pos + 1) * coeff_gcd + ending_off - corridor_min
-            if 0 < b_pos < coeff_gcd and k_pos < max_u:
-                model.add(ending_breach >= b_pos * (u_var - k_pos))
-            k_neg = (-corridor_min - ending_off + coeff_gcd - 1) // coeff_gcd
-            b_neg = -((k_neg - 1) * coeff_gcd + ending_off) - corridor_min
-            if 0 < b_neg < coeff_gcd and k_neg > min_u:
-                model.add(ending_breach >= b_neg * (k_neg - u_var))
-            obj_vars.append(ending_breach)
-            obj_coeffs.append(breach_coeff)
+            min_cost = min(cost_vals)
+            max_cost = max(cost_vals)
+            if min_cost == max_cost:
+                obj_constant_offset += min_cost
+            else:
+                # Shift by min_cost and factor delta GCD so LP coefficients stay compact.
+                shifted_vals = [v - min_cost for v in cost_vals]
+                cost_gcd = math.gcd(*(v for v in shifted_vals if v > 0))
+                scaled_vals = [v // cost_gcd for v in shifted_vals]
+                obj_constant_offset += min_cost
+                emp_cost = model.new_int_var(0, max(scaled_vals), f"emp_cost_{e_idx}")
+                prev_slope: int | None = None
+                for offset in range(len(scaled_vals) - 1):
+                    slope = scaled_vals[offset + 1] - scaled_vals[offset]
+                    if slope != prev_slope:
+                        u_k = min_u + offset
+                        model.add(emp_cost >= scaled_vals[offset] + slope * (u_var - u_k))
+                        prev_slope = slope
+                obj_vars.append(emp_cost)
+                obj_coeffs.append(cost_gcd)
 
     # Redundant global shift-duration conservation cut linking employee hours to duration counts.
     if not hard_infeasible and u_vars_all and dur_vars:
@@ -1062,6 +1094,7 @@ def solve_schedule(
     solver.parameters.random_seed = problem.options.random_seed
     solver.parameters.num_search_workers = problem.options.num_search_workers
     solver.parameters.linearization_level = 2
+    solver.parameters.relative_gap_limit = 0.01
 
     cp_status = solver.solve(model)
     duration_ms = max(0, round((perf_counter() - start_time) * 1000))
