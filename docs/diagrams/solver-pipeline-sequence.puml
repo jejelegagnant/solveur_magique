@@ -1,0 +1,63 @@
+@startuml solver-pipeline-sequence
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #334155
+  LifeLineBorderColor #64748B
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+}
+
+title Solveur Magique (V1.0.0) — Asynchronous CP-SAT Optimization & Diagnostics Sequence
+
+actor "Team Manager" as Manager
+participant "React Grid UI" as UI
+participant "FastAPI API" as API
+database "PostgreSQL 16\n(RLS)" as PG
+queue "Redis 7" as Redis
+participant "CP-SAT Worker\n(solver_core)" as Worker
+participant "Export Service\n(openpyxl)" as Export
+
+Manager -> UI : Click "Optimize Schedule"\n(allow_pouliste=true, pinned_cells)
+UI -> API : POST /api/schedules/{period_id}/solve
+
+API -> PG : Verify Tenant RLS, Tier Quota & Load Inputs\n(Shifts, Coverage, LegalRuleSet, Staff, Requests,\nPrior-Month 7-Day Boundary, Pinned Cells)
+PG --> API : Immutable Schedule Context
+
+API -> PG : INSERT SolverJob (status=QUEUED, timeout=15s)
+API -> Redis : LPUSH solver_paid {job_id, problem_snapshot}
+API --> UI : 202 Accepted {job_id}
+UI -> API : Subscribe SSE /api/jobs/{job_id}/events
+
+Redis -> Worker : Pop {job_id, problem_snapshot}
+Worker -> PG : UPDATE SolverJob (status=RUNNING)
+
+group solver_core (Pure Python + Google OR-Tools CP-SAT)
+  Worker -> Worker : 1. Create binary vars x[e,d,s] + optional pouliste_slack[d,s]
+  Worker -> Worker : 2. Add Hard Constraints with tracking assumptions:\n   - Coverage min/target & no double-booking\n   - Swiss Preset (LTr / OLT 2 / L-GAV rest, max streaks, Sundays)\n   - Vacations V + auto weekend buffers + fixed SDE\n   - Doublure trainee/mentor pairing + Pinned cells\n   - Monthly ±10h hour corridor (incl. carry-over)
+  Worker -> Worker : 3. Set Weighted Soft Objective:\n   - Maximize (Wish Weight * Rolling Equity Score)\n   - Minimize Hour-Balance Drift, Pouliste Slack & Pin Churn
+  Worker -> Worker : 4. Run CpSolver.Solve(model) with max_time_in_seconds
+end
+
+alt Status == OPTIMAL or FEASIBLE
+  Worker -> Worker : Compute KPIs (Wish %, Ending Soldes, Pouliste Gaps)
+  Worker -> PG : Persist ShiftAssignments + SolverJob (status=SUCCEEDED)
+  Worker -> Redis : PUBLISH job:{job_id} {SUCCEEDED, kpis}
+  Redis --> API : Event
+  API --> UI : SSE SUCCEEDED -> Render Monthly Matrix Grid
+else Status == INFEASIBLE
+  Worker -> Worker : Run SufficientAssumptionsForInfeasibility()\nExtract minimal conflicting constraint core
+  Worker -> Worker : Map assumption IDs -> localized FR/DE/EN Conflict Cards\n+ 1-click resolution hints (e.g. allow Pouliste / unpin)
+  Worker -> PG : Persist ConflictReport + SolverJob (status=INFEASIBLE)
+  Worker -> Redis : PUBLISH job:{job_id} {INFEASIBLE, conflict_cards}
+  Redis --> API : Event
+  API --> UI : SSE INFEASIBLE -> Display Conflict Cards
+end
+
+opt Manager Approves & Exports to Legacy ERP
+  Manager -> UI : Click "Export ERP Excel (.xlsx)"
+  UI -> API : GET /api/schedules/{period_id}/export?format=xlsx
+  API -> Export : Render multi-sheet workbook\n(Matrix with MC1/V/X/SDE + Flat Import + Pouliste Sheet)
+  Export --> UI : Stream Schedule_2027_01.xlsx
+end
+
+@enduml

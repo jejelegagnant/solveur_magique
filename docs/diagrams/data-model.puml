@@ -1,0 +1,223 @@
+@startuml data-model
+hide circle
+skinparam shadowing false
+skinparam linetype ortho
+skinparam entity {
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+  ArrowColor #475569
+}
+
+title Solveur Magique (V1.0.0) — Multi-Tenant Domain Data Model (PostgreSQL 16 + RLS)
+
+entity "organizations" as Org {
+  * id : UUID <<PK>>
+  --
+  name : VARCHAR
+  is_sandbox : BOOLEAN
+  tier : ENUM(free, starter, pro, business)
+  dpa_accepted_at : TIMESTAMPTZ
+  dpa_version : VARCHAR
+  stripe_customer_id : VARCHAR
+  locale : ENUM(fr_CH, de_CH, en)
+  created_at : TIMESTAMPTZ
+  expires_at : TIMESTAMPTZ
+}
+
+entity "users" as User {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  email : VARCHAR <<UNIQUE>>
+  password_hash : VARCHAR
+  role : ENUM(org_admin, team_manager, staff_viewer)
+  created_at : TIMESTAMPTZ
+}
+
+entity "subscriptions_invoices" as Billing {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  payment_method : ENUM(stripe_ch, swiss_qr_bill)
+  billing_cycle : ENUM(monthly, annual)
+  amount_chf : NUMERIC(10,2)
+  vat_rate : NUMERIC(4,2)
+  qr_reference : VARCHAR
+  status : ENUM(active, pending_qr, past_due, canceled)
+  period_start : DATE
+  period_end : DATE
+}
+
+entity "teams" as Team {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  name : VARCHAR
+  canton_code : CHAR(2)
+  base_fulltime_weekly_h : NUMERIC(4,2)
+  default_corridor_h : NUMERIC(4,2)
+  auto_vacation_weekend_buffer : BOOLEAN
+}
+
+entity "legal_rule_sets" as Legal {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  * team_id : UUID <<FK>>
+  preset_type : ENUM(ltr_45, ltr_50, olt2_care, lgav, custom_cct)
+  min_daily_rest_h : NUMERIC(4,2)
+  min_reduced_rest_h : NUMERIC(4,2)
+  max_consecutive_days : INT
+  min_free_sundays_year : INT
+  night_bonus_pct : NUMERIC(4,2)
+  rules_json : JSONB
+  effective_from : DATE
+}
+
+entity "shift_templates" as Shift {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  * team_id : UUID <<FK>>
+  erp_code : VARCHAR(16)
+  label : VARCHAR
+  segments_json : JSONB
+  unpaid_break_min : INT
+  paid_duration_h : NUMERIC(4,2)
+  color_hex : CHAR(7)
+  is_night_shift : BOOLEAN
+  required_role_tag : VARCHAR
+}
+
+entity "coverage_rules" as Coverage {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  * team_id : UUID <<FK>>
+  * shift_template_id : UUID <<FK>>
+  day_type : ENUM(weekday, saturday, sunday, holiday)
+  override_date : DATE
+  min_headcount : INT
+  target_headcount : INT
+}
+
+entity "employees" as Emp {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  * team_id : UUID <<FK>>
+  display_label : VARCHAR
+  erp_employee_code : VARCHAR
+  email : VARCHAR
+  pensum_pct : NUMERIC(5,2)
+  current_solde_h : NUMERIC(6,2)
+  rolling_equity_score : NUMERIC(5,2)
+  role_tags_json : JSONB
+  is_trainee_doublure : BOOLEAN
+  mentor_ids_json : JSONB
+}
+
+note bottom of Emp
+  nLPD Data Minimization:
+  Zero medical, illness-reason, salary,
+  or AHV/AVS columns in schema.
+  Sandbox uses pseudonyms only.
+end note
+
+entity "schedule_periods" as Period {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  * team_id : UUID <<FK>>
+  * legal_rule_set_id : UUID <<FK>>
+  year_month : CHAR(7)
+  status : ENUM(draft, collecting_wishes, solved, finalized)
+  published_at : TIMESTAMPTZ
+  archive_s3_key : VARCHAR
+}
+
+entity "availability_requests" as Req {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  * period_id : UUID <<FK>>
+  * employee_id : UUID <<FK>>
+  request_date : DATE
+  kind : ENUM(vacation_v, weekend_buffer_x, hard_unavail, fixed_sde, soft_prefer, soft_avoid)
+  shift_template_id : UUID
+  custom_interval_json : JSONB
+  weight : ENUM(low, medium, high)
+  source : ENUM(manager, employee_portal)
+  approved : BOOLEAN
+}
+
+entity "shift_assignments" as Assign {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  * period_id : UUID <<FK>>
+  employee_id : UUID
+  shift_template_id : UUID
+  work_date : DATE
+  cell_code : VARCHAR(16)
+  is_pinned : BOOLEAN
+  is_doublure : BOOLEAN
+  is_pouliste_gap : BOOLEAN
+  paid_hours : NUMERIC(4,2)
+}
+
+entity "solver_jobs" as Job {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  * period_id : UUID <<FK>>
+  status : ENUM(queued, running, optimal, feasible, infeasible, timeout, error)
+  timeout_sec : INT
+  solve_duration_ms : INT
+  kpis_json : JSONB
+  conflict_cards_json : JSONB
+  created_at : TIMESTAMPTZ
+}
+
+entity "export_mapping_profiles" as ExportProf {
+  * id : UUID <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  * team_id : UUID <<FK>>
+  profile_name : VARCHAR
+  format : ENUM(xlsx, csv)
+  delimiter : CHAR(1)
+  code_overrides_json : JSONB
+}
+
+entity "audit_logs" as Audit {
+  * id : BIGINT <<PK>>
+  --
+  * org_id : UUID <<FK, RLS>>
+  actor_user_id : UUID
+  action : VARCHAR
+  entity_ref : VARCHAR
+  created_at : TIMESTAMPTZ
+}
+
+' === Relationships ===
+Org ||--o{ User
+Org ||--o{ Billing
+Org ||--o{ Team
+Org ||--o{ Audit
+Team ||--o{ Legal
+Team ||--o{ Shift
+Team ||--o{ Coverage
+Team ||--o{ Emp
+Team ||--o{ Period
+Team ||--o{ ExportProf
+Shift ||--o{ Coverage
+Legal ||--o{ Period
+Period ||--o{ Req
+Period ||--o{ Assign
+Period ||--o{ Job
+Emp ||--o{ Req
+Emp ||--o{ Assign
+Shift ||--o{ Assign
+
+@enduml

@@ -1,0 +1,58 @@
+@startuml deployment-swiss-cloud
+skinparam shadowing false
+skinparam node {
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+}
+skinparam cloud {
+  BackgroundColor #EFF6FF
+  BorderColor #1D4ED8
+}
+
+title Solveur Magique (V1.0.0) — 100% Swiss Sovereign Deployment & Scale-Out Topology
+
+cloud "Swiss Public Internet\n(HTTPS / TLS 1.3)" as Net
+
+node "Stage 1: V1.0.0 Launch (10–30 Teams | CHF 45.41/mo)\nInfomaniak VPS Cloud — Geneva / Zurich (ISO 27001)" as LaunchNode {
+  artifact "Docker Compose Stack (2 vCPU / 6 GB RAM / 100 GB SSD)" {
+    [caddy:2\n(TLS 1.3 + SPA Static)] as C1
+    [fastapi-api\n(Modular Monolith)] as API1
+    [cpsat-worker\n(OR-Tools CP-SAT)] as W1
+    [redis:7] as R1
+    [postgres:16\n(RLS + Encrypted Vol)] as PG1
+  }
+}
+
+node "Infomaniak Sovereign Shared Services (CH)" as SwissSvc {
+  storage "Infomaniak Swiss Backup S3\n(AES-256 Daily + WAL + 5-Yr Archives)" as S3
+  [Infomaniak SMTP\n(Transactional Mail)] as Mail
+  [GlitchTip / Prometheus\n(Zero-PII Telemetry)] as Mon
+}
+
+node "Stage 2 & 3 Scale-Out Path (100 -> 1,000 Teams)" as ScalePath {
+  node "Web / API Nodes (2x Infomaniak VPS)" as WebScale {
+    [Caddy LB + FastAPI Replicas]
+  }
+  node "Dedicated Solver Pool (6–8 vCPU Infomaniak)" as SolverScale {
+    [OR-Tools CP-SAT Workers\n(Handles 5x Month-End Bursts)]
+  }
+  node "Exoscale Managed PostgreSQL HA\n(Geneva / Zurich, 2 Nodes, PITR)" as ExoPG {
+    database "Primary + Standby PG 16"
+  }
+}
+
+Net --> C1 : HTTPS
+C1 --> API1
+API1 --> PG1
+API1 --> R1
+R1 --> W1
+W1 --> PG1
+
+PG1 --> S3 : Daily Encrypted Backups & WAL
+API1 --> Mail : TLS SMTP
+API1 --> Mon : Scrubbed Metrics
+W1 --> Mon : Solve Latency / Queue Depth
+
+LaunchNode ..> ScalePath : "Zero code rewrite:\nSplit docker-compose roles\nat ~50–100 paying teams"
+
+@enduml
