@@ -1,0 +1,77 @@
+@startuml information-flow
+skinparam shadowing false
+skinparam activity {
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+  DiamondBackgroundColor #FEF3C7
+  DiamondBorderColor #B45309
+  ArrowColor #475569
+}
+
+title Solveur Magique (V1.0.0) — End-to-End Scheduling Information Flow
+
+|Manager / Staff Input|
+start
+:Define Team & Swiss Canton\n(Auto-load Public Holidays);
+:Define Discrete Shift Templates\n(ERP Codes: MC1, M, S, N, Split Shifts, Breaks);
+:Define Daily Coverage Targets\n(Weekday / Weekend / Holiday headcounts);
+:Select Swiss Legal Preset\n(LTr / OLT 2 / L-GAV / Custom CCT);
+:Enter Staff Profiles\n(Pseudonym or Name, % Pensum, Carry-over Solde,\nMonthly ±10h Corridor, Doublure Pairs);
+
+fork
+  :Manager enters Hard Absences\n(Vacations V + Auto Weekend Buffers,\nFixed SDE Team Meetings);
+fork again
+  :Collect Unlimited Soft Preferences\n(Manager-entered or Pro-Tier Employee Portal,\nWeighted by Rolling Multi-Month Equity);
+end fork
+
+|Validation & Privacy Gate|
+:Validate Structural Integrity\n(Break Thresholds, Valid Codes, Tier Quotas);
+:Enforce nLPD Privacy Rules\n(Pseudonymized in Sandbox; Zero Medical Free-Text);
+:Build Immutable Problem Snapshot (JSON);
+
+|Async CP-SAT Optimization Engine|
+:Enqueue SolverJob in Redis\n(Tier Timeout: 5s / 15s / 30s);
+:Construct Discrete CP-SAT Model\n(Binary vars x[e,d,s], Hard Legal/Coverage/Pinned,\nOptional Pouliste Slack, Soft Fairness Objective);
+:Execute Google OR-Tools CP-SAT Solver;
+
+if (Feasible Solution Found?) then (Yes)
+  :Compute KPIs\n(Wish Satisfaction %, Projected Solde d'heures,\nPouliste Open Slots, 0 Legal Violations);
+  :Persist Draft Schedule Snapshot;
+else (No - INFEASIBLE)
+  :Run SufficientAssumptionsForInfeasibility\nExtract Minimal Conflicting Constraints;
+  :Translate to Plain-Language Conflict Cards\n(Exact Staff, Dates & Violated Rule);
+  |Manager / Staff Input|
+  :Review Conflict Cards & Choose Resolution\n(Allow Pouliste Slot / Widen Tolerance / Unpin);
+  detach
+endif
+
+|Human-in-the-Loop Grid Review|
+:Display ERP-Familiar Monthly Matrix Grid\n(Staff Rows, Day Cols, Weekend/Holiday Shading,\nFooter Daily Headcount & Hours, Running Hour Deltas);
+
+if (Manual Adjustments / Pinning Needed?) then (Yes)
+  :Edit Cells & Toggle Cell Pins (Lock);
+  :Run Instant Rule & Double-Booking Check;
+  :Trigger Partial Re-Solve on Unlocked Cells;
+  |Async CP-SAT Optimization Engine|
+  :Re-Optimize Preserving Pinned Assignments;
+  detach
+else (No - Approved)
+  |Human-in-the-Loop Grid Review|
+  :Finalize & Publish Month;
+endif
+
+|Export Engine & Archival|
+:Persist Final Snapshot (5-Yr Archive on Business)\n& Roll Forward Ending Solde d'heures + Equity Score;
+fork
+  :Generate ERP-Mapped Excel (.xlsx)\n- Styled Matrix Sheet (MC1, V, X, SDE)\n- Flat Import Sheet\n- Pouliste Gap List;
+fork again
+  :Generate CSV (Generic / Bexio / Abacus / Crésus);
+fork again
+  :Generate Printable PDF & Employee iCal (.ics);
+end fork
+
+|Legacy ERP (External)|
+:Manager Transcribes Clean Grid\nor Imports Excel/CSV into Legacy ERP;
+stop
+
+@enduml

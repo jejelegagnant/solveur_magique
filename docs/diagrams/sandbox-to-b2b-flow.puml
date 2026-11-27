@@ -1,0 +1,57 @@
+@startuml sandbox-to-b2b-flow
+skinparam shadowing false
+skinparam sequence {
+  ArrowColor #334155
+  LifeLineBorderColor #64748B
+  ParticipantBackgroundColor #F8FAFC
+  ParticipantBorderColor #334155
+}
+
+title Solveur Magique (V1.0.0) — nLPD-Compliant Sandbox-to-B2B Conversion Flow
+
+actor "Team Manager\n(Claire)" as Manager
+participant "Web App\n(Zero-PII Sandbox)" as Web
+participant "FastAPI Backend\n(Swiss Cloud)" as API
+participant "Export & PDF\nGenerator" as PDF
+actor "Institution Director\n(Marc)" as Director
+participant "Billing\n(Stripe CH / QR-Bill)" as Billing
+
+== Phase 1: Risk-Free Bottom-Up Trial (Zero PII) ==
+Manager -> Web : Click "Start Anonymous Sandbox"
+Web -> API : POST /sandbox/sessions (No real names, no card)
+API --> Web : Ephemeral workspace + nLPD pseudonym banner
+Manager -> Web : Configure real shift codes (MC1, SDE), pensums\nas "Staff A / B / C" & run CP-SAT solve
+Web -> API : POST /schedules/{id}/solve
+API --> Web : Optimized grid + conflict demo (5s cap)
+note over Manager, API
+  No identifiable natural persons -> Zero nLPD exposure
+  during evaluation; manager validates ROI in < 10 minutes.
+end note
+
+== Phase 2: One-Click Institutional Conversion ("Pack Direction") ==
+Manager -> Web : Click "Request Institutional Funding"
+Web -> API : POST /pack-direction (team_size, current_hours_per_week)
+API -> PDF : Render 2-page Pack Direction PDF\n(ROI Estimate + Pre-Signed nLPD Art. 9 DPA +\nInfomaniak Swiss ISO 27001 Attestation)
+PDF --> Web : Pack_Direction_SolveurMagique.pdf
+Web --> Manager : Download PDF dossier
+Manager -> Director : Forward Pack Direction for budget sign-off
+
+== Phase 3: Top-Down B2B Approval & Tenant Activation ==
+Director -> Web : Open upgrade link & select flat tier\n(Starter CHF 39 / Pro CHF 69 / Business CHF 129)
+Director -> Web : Countersign nLPD DPA digitally
+
+alt Self-Serve Card / TWINT (Starter / Pro / SME)
+  Web -> Billing : Redirect to Stripe Switzerland Checkout (CHF)
+  Billing --> API : Webhook: checkout.session.completed
+else Institutional Annual Invoice (Business / Foundation)
+  API -> Billing : Generate ISO 20022 Swiss QR-Bill PDF
+  Billing --> Director : Deliver QR-Invoice (30-day payment term)
+  Director -> Billing : Pay via Swiss e-banking
+  Billing --> API : Payment reconciled (Operator / Camt.054)
+end
+
+API -> API : Promote Sandbox templates to Named Multi-Tenant Org\nEnable PostgreSQL RLS + Tier Quotas + DPA Audit Record
+API --> Director : Subscription active + Invoice archive
+API --> Manager : Workspace unlocked (real names enabled, full Excel/CSV export)
+
+@enduml

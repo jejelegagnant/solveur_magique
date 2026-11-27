@@ -1,0 +1,86 @@
+@startuml use-case-diagram
+left to right direction
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam actorStyle awesome
+skinparam usecase {
+  BackgroundColor #F8FAFC
+  BorderColor #334155
+  ArrowColor #475569
+}
+
+title Solveur Magique (V1.0.0) — System Use Case Diagram
+
+' === Primary Actors ===
+actor "Team Manager\n(Care / Service Unit Lead)" as Manager
+actor "Institution Director\n(HR / Budget Owner)" as Director
+actor "SME Owner-Manager\n(Hospitality / Retail)" as SMEOwner
+actor "Staff Member\n(Part-Time Employee)" as Staff
+
+' SME Owner inherits both Manager and Director roles
+SMEOwner -up-|> Manager
+SMEOwner -up-|> Director
+
+' === Secondary / External Systems ===
+actor "Legacy ERP\n(Polypoint / Abacus / Bexio / Excel)" as LegacyERP <<External System>>
+actor "Billing Provider\n(Stripe CH / Swiss QR-Bill)" as Billing <<External System>>
+actor "Swiss Mail Service\n(Infomaniak SMTP)" as Mail <<External System>>
+
+rectangle "Solveur Magique V1.0.0 (100% Swiss-Hosted SaaS)" {
+
+  package "Onboarding & Compliance" {
+    usecase "UC-01: Evaluate in Zero-PII\nAnonymous Sandbox" as UC01
+    usecase "UC-11: Generate Pack Direction\n& Activate B2B Subscription" as UC11
+  }
+
+  package "Configuration & Rules" {
+    usecase "UC-02: Configure Team, Shift Codes\n& Daily Coverage Matrix" as UC02
+    usecase "UC-03: Apply Swiss Legal Preset\n(LTr / OLT 2 / L-GAV / CCT)" as UC03
+    usecase "UC-04: Manage Staff, Pensums,\nBalances & Doublure Rules" as UC04
+    usecase "UC-05: Capture Hard Absences,\nSDE Events & Soft Preferences" as UC05
+  }
+
+  package "CP-SAT Optimization & Grid" {
+    usecase "UC-06: Generate Optimized\nMonthly Schedule (CP-SAT)" as UC06
+    usecase "UC-07: Diagnose & Resolve\nInfeasible Constraints" as UC07
+    usecase "UC-08: Pin Manual Assignments\n& Re-Optimize Unlocked Cells" as UC08
+    usecase "UC-09: Inspect Matrix Grid,\nCoverage & Hour Deltas" as UC09
+  }
+
+  package "Interoperability & Higher-Tier Portal" {
+    usecase "UC-10: Export ERP-Mapped Excel\n(.xlsx), CSV, PDF & iCal" as UC10
+    usecase "UC-12: Submit Availability &\nSoft Preferences (Pro / Business)" as UC12
+  }
+}
+
+' === Actor Associations ===
+Manager --> UC01
+Manager --> UC02
+Manager --> UC03
+Manager --> UC04
+Manager --> UC05
+Manager --> UC06
+Manager --> UC08
+Manager --> UC09
+Manager --> UC10
+Manager --> UC11
+
+Director --> UC11
+Staff --> UC12
+
+' === External System Interactions ===
+UC10 --> LegacyERP : "Excel / CSV bridge"
+UC11 --> Billing : "CHF Card / TWINT / QR-Bill"
+UC11 --> Mail : "DPA & Invoice delivery"
+UC12 --> Mail : "Tokenized wish link"
+UC09 --> Mail : "Published schedule notice\n(Pro / Business)"
+
+' === Include / Extend Relationships ===
+UC06 ..> UC03 : <<include>>\nEnforce active legal rules
+UC07 ..> UC06 : <<extend>>\n[Solver returns INFEASIBLE]
+UC08 ..> UC06 : <<include>>\nRe-solve unlocked slots
+UC09 ..> UC06 : <<extend>>\n[Review & publish draft]
+UC11 ..> UC01 : <<extend>>\n[Upgrade from Sandbox]
+UC05 <.. UC12 : <<extend>>\n[Feeds employee wishes]
+
+@enduml
