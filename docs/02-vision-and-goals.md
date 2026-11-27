@@ -55,7 +55,9 @@ Flat-tier pricing by team-size bracket eliminates the "part-time penalty" impose
 | **PME (Pro)** | **69** | **690** | ≤ 25 staff, 1–2 sites | Everything in Starter + **Employee Wish Submission Portal** (higher-tier exclusive), multi-month rolling fairness, custom `CCT` overrides, email schedule distribution, 30s solver cap. |
 | **Institution (Business)** | **129** | **1,290** | ≤ 60 staff (+CHF 2/extra) | Everything in Pro + multi-unit teams, executed `nLPD` DPA, **5-year legal archive** (Art. 46 `LTr`), payroll CSV templates (Bexio/Abacus/Crésus), **Swiss QR-Bill** invoicing. |
 
-*Tax note*: Swiss VAT (`8.1%`) registration becomes mandatory only above `CHF 100,000` annual global turnover (Art. 10 `LTVA`, ~170 paying teams at CHF 49 ARPU). Billing templates will support VAT toggle activation seamlessly when the threshold is approached.
+*Tax & Swiss legal entity evolution*:
+- **V1.0.0 Launch (*Raison individuelle* / Sole Proprietorship)**: Launching as a Swiss *raison individuelle* keeps startup cost and administrative overhead near zero (simplified accounting under CHF 500k per Art. 957 al. 2 CO; no mandatory Commercial Register entry or `8.1%` VAT registration below `CHF 100,000` annual turnover per Art. 934 CO & Art. 10 LTVA — ~170 paying teams at CHF 49 ARPU). Because a *raison individuelle* carries unlimited personal liability, V1.0.0 enforces strict risk hygiene: zero medical/health fields in the database, 100% Swiss hosting, and explicit Terms/DPA wording positioning Solveur Magique as a **scheduling decision-support tool** where the employer retains final statutory compliance sign-off.
+- **Scale-Up Path (Sàrl / GmbH Conversion)**: All generated legal and financial artifacts (*Pack Direction*, `nLPD` DPA, Stripe invoices, Swiss QR-Bills) must read vendor identity (`legal_name`, `brand_name`, `address`, optional `IDE/UID`, optional `VAT` toggle, `QR-IBAN`, `dpa_version`) from configuration so transitioning to a **Sàrl** once commercial traction grows requires **zero code changes**.
 
 ---
 
