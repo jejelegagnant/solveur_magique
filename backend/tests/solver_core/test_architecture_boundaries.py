@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +14,16 @@ import pytest
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 SOLVER_CORE_DIR = BACKEND_DIR / "solver_core"
 SCHEMAS_DIR = SOLVER_CORE_DIR / "schemas"
-LINT_IMPORTS_BIN = Path(sys.executable).parent / "lint-imports"
+
+
+def _resolve_lint_imports_bin() -> Path:
+    candidate = Path(sys.executable).parent / "lint-imports"
+    if candidate.exists():
+        return candidate
+    found = shutil.which("lint-imports")
+    assert found is not None, f"lint-imports binary not found at {candidate} or on PATH"
+    return Path(found)
+
 
 FORBIDDEN_TOP_LEVEL_MODULES: frozenset[str] = frozenset(
     {
@@ -103,9 +113,9 @@ def test_ast_schemas_never_import_time_utils() -> None:
 @pytest.mark.architecture
 def test_import_linter_cli_contract_passes() -> None:
     """import-linter confirms the solver_core forbidden-imports contract is kept."""
-    assert LINT_IMPORTS_BIN.exists(), f"lint-imports binary not found at {LINT_IMPORTS_BIN}"
+    lint_imports_bin = _resolve_lint_imports_bin()
     result = subprocess.run(
-        [str(LINT_IMPORTS_BIN)],
+        [str(lint_imports_bin)],
         cwd=BACKEND_DIR,
         capture_output=True,
         text=True,
@@ -151,8 +161,9 @@ forbidden_modules = ["fastapi"]
     env = os.environ.copy()
     env["PYTHONPATH"] = str(tmp_path)
 
+    lint_imports_bin = _resolve_lint_imports_bin()
     result = subprocess.run(
-        [str(LINT_IMPORTS_BIN)],
+        [str(lint_imports_bin)],
         cwd=tmp_path,
         env=env,
         capture_output=True,

@@ -11,11 +11,11 @@ from pydantic import Field, field_validator, model_validator
 
 from solver_core.schemas.common import DayType, StrictBaseModel
 
-_MICROSECONDS_PER_DAY = 24 * 60 * 60 * 1_000_000
+_MINUTES_PER_DAY = 24 * 60
 
 
-def _time_to_microseconds(t: time) -> int:
-    return ((t.hour * 3600 + t.minute * 60 + t.second) * 1_000_000) + t.microsecond
+def _time_to_minutes(t: time) -> int:
+    return t.hour * 60 + t.minute
 
 
 def validate_segments_chronology(
@@ -25,21 +25,19 @@ def validate_segments_chronology(
 ) -> None:
     """Validate segments are ordered, non-overlapping, and at most the final crosses midnight."""
     last_idx = len(segments) - 1
-    prev_end_us: int | None = None
+    prev_end_min: int | None = None
 
     for idx, seg in enumerate(segments):
         if seg.crosses_midnight and idx != last_idx:
             msg = f"Only the final segment of a {context} may cross midnight."
             raise ValueError(msg)
 
-        start_us = _time_to_microseconds(seg.start_time)
-        end_us = _time_to_microseconds(seg.end_time) + (
-            _MICROSECONDS_PER_DAY if seg.crosses_midnight else 0
-        )
-        if prev_end_us is not None and start_us < prev_end_us:
+        start_min = _time_to_minutes(seg.start_time)
+        end_min = _time_to_minutes(seg.end_time) + (_MINUTES_PER_DAY if seg.crosses_midnight else 0)
+        if prev_end_min is not None and start_min < prev_end_min:
             msg = f"{context} segments must be in chronological order with zero overlap."
             raise ValueError(msg)
-        prev_end_us = end_us
+        prev_end_min = end_min
 
 
 class ShiftSegment(StrictBaseModel):
@@ -51,9 +49,12 @@ class ShiftSegment(StrictBaseModel):
 
     @field_validator("start_time", "end_time")
     @classmethod
-    def _validate_naive_time(cls, value: time) -> time:
+    def _validate_naive_minute_time(cls, value: time) -> time:
         if value.tzinfo is not None:
             msg = "ShiftSegment times must be timezone-naive local wall times."
+            raise ValueError(msg)
+        if value.second != 0 or value.microsecond != 0:
+            msg = "ShiftSegment times must have minute precision (second=0, microsecond=0)."
             raise ValueError(msg)
         return value
 
@@ -83,11 +84,23 @@ class ShiftTemplate(StrictBaseModel):
     paid_duration_h: Decimal | None = Field(default=None, ge=Decimal("0"))
     color_hex: str = Field(default="#3B82F6", pattern=r"^#[0-9A-Fa-f]{6}$")
     is_night_shift: bool = False
-    required_role_tag: str | None = None
+    required_role_tag: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _validate_segments_chronology(self) -> ShiftTemplate:
         validate_segments_chronology(self.segments, context="ShiftTemplate")
+        nominal_elapsed_min = sum(
+            _time_to_minutes(seg.end_time)
+            + (_MINUTES_PER_DAY if seg.crosses_midnight else 0)
+            - _time_to_minutes(seg.start_time)
+            for seg in self.segments
+        )
+        if self.unpaid_break_min > nominal_elapsed_min:
+            msg = (
+                f"unpaid_break_min ({self.unpaid_break_min}) cannot exceed nominal shift "
+                f"duration ({nominal_elapsed_min} min)."
+            )
+            raise ValueError(msg)
         return self
 
 

@@ -149,11 +149,15 @@ def test_nlpd_availability_request_rejects_forbidden_fields(forbidden_field: str
 
 
 def test_shift_segment_rejects_aware_times() -> None:
-    """ShiftSegment requires timezone-naive Europe/Zurich wall times."""
+    """ShiftSegment requires timezone-naive Europe/Zurich wall times with minute precision."""
     with pytest.raises(ValidationError, match="timezone-naive"):
         ShiftSegment(start_time=time(7, 0, tzinfo=UTC), end_time=time(15, 0))
     with pytest.raises(ValidationError, match="timezone-naive"):
         ShiftSegment(start_time=time(7, 0), end_time=time(15, 0, tzinfo=UTC))
+    with pytest.raises(ValidationError, match="minute precision"):
+        ShiftSegment(start_time=time(7, 0, 30), end_time=time(15, 0))
+    with pytest.raises(ValidationError, match="minute precision"):
+        ShiftSegment(start_time=time(7, 0), end_time=time(15, 0, 0, 500))
 
 
 def test_shift_segment_rejects_equal_start_and_end() -> None:
@@ -206,6 +210,27 @@ def test_shift_template_rejects_non_final_midnight_crossing() -> None:
                 ShiftSegment(start_time=time(22, 0), end_time=time(2, 0), crosses_midnight=True),
                 ShiftSegment(start_time=time(3, 0), end_time=time(6, 0)),
             ),
+        )
+
+
+def test_shift_template_rejects_excessive_unpaid_break_and_blank_role_tag() -> None:
+    """unpaid_break_min cannot exceed nominal duration, and required_role_tag cannot be blank."""
+    with pytest.raises(ValidationError, match="cannot exceed nominal shift duration"):
+        ShiftTemplate(
+            id=uuid4(),
+            erp_code="BRK",
+            label="Break too long",
+            segments=(ShiftSegment(start_time=time(7, 0), end_time=time(9, 0)),),
+            unpaid_break_min=150,
+        )
+
+    with pytest.raises(ValidationError):
+        ShiftTemplate(
+            id=uuid4(),
+            erp_code="TAG",
+            label="Blank role tag",
+            segments=(ShiftSegment(start_time=time(7, 0), end_time=time(9, 0)),),
+            required_role_tag="   ",
         )
 
 
@@ -342,14 +367,47 @@ def test_doublure_config_validation() -> None:
 
 
 def test_employee_profile_rejects_self_mentoring() -> None:
-    """An employee cannot list their own UUID in doublure.mentor_ids."""
+    """An employee cannot list their own UUID in doublure.mentor_ids or duplicate shifts/tags."""
     emp_id = uuid4()
+    shift_id = uuid4()
     with pytest.raises(ValidationError, match="cannot be their own doublure mentor"):
         EmployeeProfile(
             id=emp_id,
             display_label="Self Mentor",
             pensum_pct=Decimal("80.00"),
             doublure=DoublureConfig(is_trainee=True, mentor_ids=(emp_id,)),
+        )
+
+    with pytest.raises(ValidationError, match="qualified_shift_ids must not contain duplicate"):
+        EmployeeProfile(
+            id=emp_id,
+            display_label="Dup Shift",
+            pensum_pct=Decimal("80.00"),
+            qualified_shift_ids=(shift_id, shift_id),
+        )
+
+    with pytest.raises(ValidationError, match="role_tags must not contain empty"):
+        EmployeeProfile(
+            id=emp_id,
+            display_label="Blank Tag",
+            pensum_pct=Decimal("80.00"),
+            role_tags=("soins", "   "),
+        )
+
+    with pytest.raises(ValidationError, match="role_tags must not contain duplicate"):
+        EmployeeProfile(
+            id=emp_id,
+            display_label="Dup Tag",
+            pensum_pct=Decimal("80.00"),
+            role_tags=("soins", "soins"),
+        )
+
+    with pytest.raises(ValidationError):
+        EmployeeProfile(
+            id=emp_id,
+            display_label="Blank Code",
+            erp_employee_code="   ",
+            pensum_pct=Decimal("80.00"),
         )
 
 
@@ -407,6 +465,26 @@ def test_availability_request_fixed_sde_invariants() -> None:
                 sde_label="SDE/9/11",
             )
 
+    for full_day_kind in (RequestKind.VACATION_V, RequestKind.WEEKEND_BUFFER_X):
+        with pytest.raises(ValidationError, match="shift_template_id must be None"):
+            AvailabilityRequest(
+                id=uuid4(),
+                employee_id=emp_id,
+                request_date=date(2026, 3, 12),
+                kind=full_day_kind,
+                shift_template_id=shift_id,
+            )
+
+    with pytest.raises(ValidationError):
+        AvailabilityRequest(
+            id=uuid4(),
+            employee_id=emp_id,
+            request_date=date(2026, 3, 12),
+            kind=RequestKind.FIXED_SDE,
+            custom_interval=interval,
+            sde_label="   ",
+        )
+
 
 def test_pinned_cell_exclusivity_and_doublure_invariants(
     tilleuls_solver_input: SolverInput,
@@ -448,8 +526,16 @@ def test_pinned_cell_exclusivity_and_doublure_invariants(
 
 
 def test_prior_day_record_rest_day_invariants() -> None:
-    """PriorDayRecord with is_rest_day=True forbids segments, paid_hours > 0, and Sunday flag."""
+    """PriorDayRecord with is_rest_day=True forbids shift, segments, paid_hours > 0, and Sunday."""
     emp_id = uuid4()
+    with pytest.raises(ValidationError, match="cannot have a shift_template_id"):
+        PriorDayRecord(
+            employee_id=emp_id,
+            work_date=date(2026, 2, 28),
+            shift_template_id=uuid4(),
+            is_rest_day=True,
+        )
+
     with pytest.raises(ValidationError, match="cannot have shift segments"):
         PriorDayRecord(
             employee_id=emp_id,
@@ -617,6 +703,12 @@ def test_solver_input_rejects_out_of_month_dates(tilleuls_solver_input: SolverIn
     with pytest.raises(ValidationError, match="Duplicate PriorDraftAssignment"):
         SolverInput.model_validate(data_dup_draft)
 
+    # Non-ASCII digits in year_month rejected consistently with time_utils
+    data_unicode_ym = tilleuls_solver_input.model_dump()
+    data_unicode_ym["year_month"] = "\u0662\u0660\u0662\u0666-03"
+    with pytest.raises(ValidationError):
+        SolverInput.model_validate(data_unicode_ym)
+
 
 def test_solver_input_rejects_unknown_foreign_uuids(tilleuls_solver_input: SolverInput) -> None:
     """All employee_id, shift_template_id, and mentor_id references must exist in SolverInput."""
@@ -764,6 +856,13 @@ def test_legal_rule_set_cross_field_validation() -> None:
             night_window_start=time(23, 0, tzinfo=UTC),
         )
 
+    with pytest.raises(ValidationError, match="minute precision"):
+        LegalRuleSet(
+            preset_type=LegalPresetType.CUSTOM_CCT,
+            max_weekly_hours=Decimal("42.0"),
+            night_window_end=time(6, 0, 15),
+        )
+
     with pytest.raises(ValidationError, match="must either both be set or both be None"):
         LegalRuleSet(
             preset_type=LegalPresetType.CUSTOM_CCT,
@@ -858,6 +957,15 @@ def test_solver_output_status_payload_invariants(
                 solutions=(sol,),
                 error_message="unexpected",
             )
+
+    # Duplicate option_index across solutions rejected
+    with pytest.raises(ValidationError, match="unique option_index"):
+        SolverOutput(
+            period_id=pid,
+            status=SolverStatus.OPTIMAL,
+            solve_duration_ms=10,
+            solutions=(sol, sol),
+        )
 
     # INFEASIBLE requires empty solutions, >= 1 conflict card, no error_message
     with pytest.raises(ValidationError, match="must include >= 1 conflict card"):
@@ -963,6 +1071,67 @@ def test_output_submodel_invariants() -> None:
     weights = ObjectiveWeights()
     assert weights.pouliste_gap_penalty > weights.corridor_breach_penalty
     assert ScheduleSolution(kpis=ScheduleKPIs()).option_index == 0
+
+    pref_id = uuid4()
+    with pytest.raises(ValidationError, match="must be disjoint"):
+        ShiftAssignmentOut(
+            employee_id=uuid4(),
+            work_date=date(2026, 3, 10),
+            cell_code="MC1",
+            satisfied_preference_ids=(pref_id,),
+            violated_preference_ids=(pref_id,),
+        )
+
+    with pytest.raises(ValidationError, match="is_sde=True must have shift_template_id=None"):
+        ShiftAssignmentOut(
+            employee_id=uuid4(),
+            work_date=date(2026, 3, 10),
+            shift_template_id=uuid4(),
+            cell_code="SDE/9/11",
+            is_sde=True,
+        )
+
+    with pytest.raises(ValidationError, match="is_sde=True cannot have is_doublure=True"):
+        ShiftAssignmentOut(
+            employee_id=uuid4(),
+            work_date=date(2026, 3, 10),
+            cell_code="SDE/9/11",
+            is_sde=True,
+            is_doublure=True,
+        )
+
+    emp_id = uuid4()
+    shift_id = uuid4()
+    summary = EmployeeSummaryOut(
+        employee_id=emp_id,
+        target_hours=Decimal("160.00"),
+        scheduled_hours=Decimal("160.00"),
+        monthly_delta_h=Decimal("0.00"),
+        starting_solde_h=Decimal("0.00"),
+        ending_solde_h=Decimal("0.00"),
+    )
+    with pytest.raises(ValidationError, match="Duplicate EmployeeSummaryOut"):
+        ScheduleSolution(employee_summaries=(summary, summary), kpis=ScheduleKPIs())
+
+    cov = DailyCoverageSummaryOut(
+        work_date=date(2026, 3, 10),
+        shift_template_id=shift_id,
+        shift_erp_code="MC1",
+        min_headcount=1,
+        target_headcount=1,
+        assigned_headcount=1,
+    )
+    with pytest.raises(ValidationError, match="Duplicate DailyCoverageSummaryOut"):
+        ScheduleSolution(daily_coverage=(cov, cov), kpis=ScheduleKPIs())
+
+    gap = PoulisteGapOut(
+        work_date=date(2026, 3, 10),
+        shift_template_id=shift_id,
+        shift_erp_code="MC1",
+        missing_headcount=1,
+    )
+    with pytest.raises(ValidationError, match="Duplicate PoulisteGapOut"):
+        ScheduleSolution(pouliste_gaps=(gap, gap), kpis=ScheduleKPIs())
 
 
 # ---------------------------------------------------------------------------

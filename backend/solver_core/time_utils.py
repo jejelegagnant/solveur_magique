@@ -310,12 +310,24 @@ def check_ltr_break_compliance(
     Split-shift unpaid mid-day gaps (``daily_span_minutes - elapsed_minutes``)
     count toward total available break time alongside ``unpaid_break_min``.
     """
-    work_min = paid_minutes(work_date, segments, unpaid_break_min)
+    if isinstance(unpaid_break_min, bool) or unpaid_break_min < 0:
+        msg = f"unpaid_break_min must be a non-negative integer, got {unpaid_break_min!r}"
+        raise ValueError(msg)
+
+    intervals = segments_utc_intervals(work_date, segments)
+    elapsed = sum((end - start) // _ONE_MINUTE_DELTA for start, end in intervals)
+    if unpaid_break_min > elapsed:
+        msg = (
+            f"unpaid_break_min ({unpaid_break_min}) cannot exceed "
+            f"elapsed shift duration ({elapsed} min)"
+        )
+        raise ValueError(msg)
+
     if paid_on_post_break:
         return []
 
-    elapsed = elapsed_minutes(work_date, segments)
-    span = daily_span_minutes(work_date, segments)
+    work_min = elapsed - unpaid_break_min
+    span = (intervals[-1][1] - intervals[0][0]) // _ONE_MINUTE_DELTA
     configured_break_min = unpaid_break_min + (span - elapsed)
 
     for threshold_min, required_break_min, code in _LTR_BREAK_THRESHOLDS:

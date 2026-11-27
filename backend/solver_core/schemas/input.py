@@ -63,7 +63,7 @@ class SolverInput(StrictBaseModel):
     """Complete immutable input snapshot passed into pure-Python solver_core (NFR-020)."""
 
     period_id: UUID
-    year_month: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
+    year_month: str = Field(pattern=r"^[0-9]{4}-(0[1-9]|1[0-2])$")
     team: TeamContext
     legal_rules: LegalRuleSet
     shift_templates: tuple[ShiftTemplate, ...] = Field(min_length=1)

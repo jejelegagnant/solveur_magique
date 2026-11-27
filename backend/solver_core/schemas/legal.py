@@ -59,6 +59,11 @@ class LegalRuleSet(StrictBaseModel):
         if value.tzinfo is not None:
             msg = "Night window boundary times must be timezone-naive local wall times."
             raise ValueError(msg)
+        if value.second != 0 or value.microsecond != 0:
+            msg = (
+                "Night window boundary times must have minute precision (second=0, microsecond=0)."
+            )
+            raise ValueError(msg)
         return value
 
     @model_validator(mode="after")

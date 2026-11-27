@@ -26,7 +26,7 @@ class AvailabilityRequest(StrictBaseModel):
     kind: RequestKind
     shift_template_id: UUID | None = None
     custom_interval: ShiftSegment | None = None
-    sde_label: str | None = None
+    sde_label: str | None = Field(default=None, min_length=1)
     weight: PreferenceWeight = PreferenceWeight.MEDIUM
     source: RequestSource = RequestSource.MANAGER
     approved: bool = True
@@ -46,6 +46,12 @@ class AvailabilityRequest(StrictBaseModel):
                 raise ValueError(msg)
             if self.sde_label is not None:
                 msg = "sde_label is only allowed when kind is fixed_sde."
+                raise ValueError(msg)
+            if (
+                self.kind in (RequestKind.VACATION_V, RequestKind.WEEKEND_BUFFER_X)
+                and self.shift_template_id is not None
+            ):
+                msg = f"shift_template_id must be None when kind is {self.kind.value}."
                 raise ValueError(msg)
         return self
 

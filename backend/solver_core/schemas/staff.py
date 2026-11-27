@@ -48,7 +48,7 @@ class EmployeeProfile(StrictBaseModel):
 
     id: UUID
     display_label: str = Field(min_length=1)
-    erp_employee_code: str | None = None
+    erp_employee_code: str | None = Field(default=None, min_length=1)
     pensum_pct: Decimal = Field(ge=Decimal("5.00"), le=Decimal("100.00"))
     base_fulltime_weekly_h: Decimal | None = Field(
         default=None,
@@ -66,6 +66,25 @@ class EmployeeProfile(StrictBaseModel):
     role_tags: tuple[str, ...] = ()
     doublure: DoublureConfig | None = None
     free_sundays_ytd: int = Field(default=0, ge=0, le=53)
+
+    @field_validator("qualified_shift_ids")
+    @classmethod
+    def _validate_unique_qualified_shifts(cls, value: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        if len(set(value)) != len(value):
+            msg = "qualified_shift_ids must not contain duplicate UUIDs."
+            raise ValueError(msg)
+        return value
+
+    @field_validator("role_tags")
+    @classmethod
+    def _validate_role_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not tag for tag in value):
+            msg = "role_tags must not contain empty strings."
+            raise ValueError(msg)
+        if len(set(value)) != len(value):
+            msg = "role_tags must not contain duplicate values."
+            raise ValueError(msg)
+        return value
 
     @model_validator(mode="after")
     def _validate_no_self_mentoring(self) -> EmployeeProfile:
@@ -89,6 +108,9 @@ class PriorDayRecord(StrictBaseModel):
     @model_validator(mode="after")
     def _validate_rest_day_consistency(self) -> PriorDayRecord:
         if self.is_rest_day:
+            if self.shift_template_id is not None:
+                msg = "PriorDayRecord with is_rest_day=True cannot have a shift_template_id."
+                raise ValueError(msg)
             if self.segments:
                 msg = "PriorDayRecord with is_rest_day=True cannot have shift segments."
                 raise ValueError(msg)

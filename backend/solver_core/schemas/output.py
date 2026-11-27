@@ -27,6 +27,28 @@ class ShiftAssignmentOut(StrictBaseModel):
     satisfied_preference_ids: tuple[UUID, ...] = ()
     violated_preference_ids: tuple[UUID, ...] = ()
 
+    @model_validator(mode="after")
+    def _validate_assignment_consistency(self) -> ShiftAssignmentOut:
+        if self.is_sde:
+            if self.shift_template_id is not None:
+                msg = "ShiftAssignmentOut with is_sde=True must have shift_template_id=None."
+                raise ValueError(msg)
+            if self.is_doublure:
+                msg = "ShiftAssignmentOut with is_sde=True cannot have is_doublure=True."
+                raise ValueError(msg)
+        satisfied_set = set(self.satisfied_preference_ids)
+        if len(satisfied_set) != len(self.satisfied_preference_ids):
+            msg = "satisfied_preference_ids must not contain duplicate UUIDs."
+            raise ValueError(msg)
+        violated_set = set(self.violated_preference_ids)
+        if len(violated_set) != len(self.violated_preference_ids):
+            msg = "violated_preference_ids must not contain duplicate UUIDs."
+            raise ValueError(msg)
+        if not satisfied_set.isdisjoint(violated_set):
+            msg = "satisfied_preference_ids and violated_preference_ids must be disjoint."
+            raise ValueError(msg)
+        return self
+
 
 class PoulisteGapOut(StrictBaseModel):
     """Uncovered shift headcount flagged for external replacement pool workers (FR-031)."""
@@ -136,6 +158,38 @@ class ScheduleSolution(StrictBaseModel):
     daily_coverage: tuple[DailyCoverageSummaryOut, ...] = ()
     kpis: ScheduleKPIs
 
+    @model_validator(mode="after")
+    def _validate_unique_entries(self) -> ScheduleSolution:
+        seen_employees: set[UUID] = set()
+        for summary in self.employee_summaries:
+            if summary.employee_id in seen_employees:
+                msg = f"Duplicate EmployeeSummaryOut for employee {summary.employee_id}."
+                raise ValueError(msg)
+            seen_employees.add(summary.employee_id)
+
+        seen_coverage: set[tuple[date, UUID]] = set()
+        for cov in self.daily_coverage:
+            key = (cov.work_date, cov.shift_template_id)
+            if key in seen_coverage:
+                msg = (
+                    f"Duplicate DailyCoverageSummaryOut for shift {cov.shift_template_id} "
+                    f"on {cov.work_date}."
+                )
+                raise ValueError(msg)
+            seen_coverage.add(key)
+
+        seen_gaps: set[tuple[date, UUID]] = set()
+        for gap in self.pouliste_gaps:
+            key = (gap.work_date, gap.shift_template_id)
+            if key in seen_gaps:
+                msg = (
+                    f"Duplicate PoulisteGapOut for shift {gap.shift_template_id} "
+                    f"on {gap.work_date}."
+                )
+                raise ValueError(msg)
+            seen_gaps.add(key)
+        return self
+
 
 class SolverOutput(StrictBaseModel):
     """Root deterministic output returned by solver_core (FR-027, FR-030, NFR-020).
@@ -162,6 +216,10 @@ class SolverOutput(StrictBaseModel):
         if self.status in (SolverStatus.OPTIMAL, SolverStatus.FEASIBLE):
             if not self.solutions:
                 msg = f"SolverOutput with status={self.status.value} must include >= 1 solution."
+                raise ValueError(msg)
+            option_indices = [sol.option_index for sol in self.solutions]
+            if len(set(option_indices)) != len(option_indices):
+                msg = "SolverOutput solutions must have unique option_index values."
                 raise ValueError(msg)
             if self.conflict_cards:
                 msg = (
