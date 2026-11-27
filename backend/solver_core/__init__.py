@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from solver_core.calendar_utils import (
+    classify_day_type,
+    compute_employee_corridor_minutes,
+    compute_monthly_target_minutes,
+    compute_trailing_work_streak,
+    get_cantonal_holidays,
+    iter_period_dates,
+)
 from solver_core.explainer import explain_infeasibility
 from solver_core.legal_presets import build_preset
 from solver_core.model_builder import solve_schedule
@@ -112,13 +120,19 @@ __all__ = [
     "__version__",
     "build_preset",
     "check_ltr_break_compliance",
+    "classify_day_type",
+    "compute_employee_corridor_minutes",
+    "compute_monthly_target_minutes",
+    "compute_trailing_work_streak",
     "daily_span_minutes",
     "elapsed_minutes",
     "explain_infeasibility",
+    "get_cantonal_holidays",
     "hours_to_minutes",
     "intervals_overlap",
     "is_ambiguous_local_time",
     "is_nonexistent_local_time",
+    "iter_period_dates",
     "local_to_utc",
     "minutes_to_hours",
     "night_window_overlap_minutes",
