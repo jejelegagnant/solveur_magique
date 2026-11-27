@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=70.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "solveur-magique-solver-core"
+version = "0.1.0"
+description = "Pure-Python Swiss shift-scheduling CP-SAT solver core (zero web/ORM coupling)."
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.10,<3.0",
+    "holidays>=0.60",
+    "tzdata>=2024.2",
+]
+
+[project.optional-dependencies]
+solver = [
+    "ortools>=9.11",
+]
+dev = [
+    "pytest>=8.3",
+    "hypothesis>=6.112",
+    "import-linter>=2.1",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["solver_core*"]
+
+[tool.setuptools.package-data]
+solver_core = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--hypothesis-seed=20260101",
+]
+markers = [
+    "property: Hypothesis property-based invariant test (NFR-019)",
+    "dst: Europe/Zurich daylight saving time transition test (NFR-024)",
+    "architecture: Architectural boundary & coupling check (NFR-020)",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["solver_core", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "RUF", "DTZ"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+disallow_any_generics = true
+plugins = ["pydantic.mypy"]
+
+[tool.importlinter]
+root_package = "solver_core"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "solver_core must have zero web, ORM, queue, or app framework imports (NFR-020)"
+type = "forbidden"
+source_modules = [
+    "solver_core",
+]
+forbidden_modules = [
+    "app",
+    "fastapi",
+    "starlette",
+    "sqlalchemy",
+    "alembic",
+    "psycopg",
+    "redis",
+    "dramatiq",
+    "celery",
+    "uvicorn",
+    "gunicorn",
+    "httpx",
+    "requests",
+    "stripe",
+]
+ignore_imports = []
