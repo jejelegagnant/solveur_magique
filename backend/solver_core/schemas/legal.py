@@ -69,6 +69,27 @@ class LegalRuleSet(StrictBaseModel):
         if self.min_reduced_rest_h is not None and self.min_reduced_rest_h > self.min_daily_rest_h:
             msg = "min_reduced_rest_h must be less than or equal to min_daily_rest_h."
             raise ValueError(msg)
+        has_avg_window = self.reduced_rest_avg_window_days is not None
+        has_avg_min = self.reduced_rest_min_avg_h is not None
+        if has_avg_window != has_avg_min:
+            msg = (
+                "reduced_rest_avg_window_days and reduced_rest_min_avg_h "
+                "must either both be set or both be None."
+            )
+            raise ValueError(msg)
+        if has_avg_window and self.min_reduced_rest_h is None:
+            msg = (
+                "min_reduced_rest_h must be set when reduced-rest "
+                "averaging parameters are provided."
+            )
+            raise ValueError(msg)
+        if (
+            self.min_reduced_rest_h is not None
+            and self.reduced_rest_min_avg_h is not None
+            and self.reduced_rest_min_avg_h < self.min_reduced_rest_h
+        ):
+            msg = "reduced_rest_min_avg_h must be greater than or equal to min_reduced_rest_h."
+            raise ValueError(msg)
         if self.night_window_start == self.night_window_end:
             msg = "night_window_start and night_window_end cannot be equal."
             raise ValueError(msg)

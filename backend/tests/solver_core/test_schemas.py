@@ -474,6 +474,18 @@ def test_prior_day_record_rest_day_invariants() -> None:
             is_sunday_worked_over_5h=True,
         )
 
+    with pytest.raises(ValidationError, match="chronological order with zero overlap"):
+        PriorDayRecord(
+            employee_id=emp_id,
+            work_date=date(2026, 2, 27),
+            segments=(
+                ShiftSegment(start_time=time(16, 0), end_time=time(21, 0)),
+                ShiftSegment(start_time=time(7, 0), end_time=time(9, 0)),
+            ),
+            paid_hours=Decimal("7.00"),
+            is_rest_day=False,
+        )
+
 
 def test_prior_month_boundary_duplicates_and_bounds(
     tilleuls_solver_input: SolverInput,
@@ -750,6 +762,33 @@ def test_legal_rule_set_cross_field_validation() -> None:
             preset_type=LegalPresetType.CUSTOM_CCT,
             max_weekly_hours=Decimal("42.0"),
             night_window_start=time(23, 0, tzinfo=UTC),
+        )
+
+    with pytest.raises(ValidationError, match="must either both be set or both be None"):
+        LegalRuleSet(
+            preset_type=LegalPresetType.CUSTOM_CCT,
+            max_weekly_hours=Decimal("45.0"),
+            min_reduced_rest_h=Decimal("9.0"),
+            reduced_rest_avg_window_days=14,
+            reduced_rest_min_avg_h=None,
+        )
+
+    with pytest.raises(ValidationError, match="min_reduced_rest_h must be set"):
+        LegalRuleSet(
+            preset_type=LegalPresetType.CUSTOM_CCT,
+            max_weekly_hours=Decimal("45.0"),
+            min_reduced_rest_h=None,
+            reduced_rest_avg_window_days=14,
+            reduced_rest_min_avg_h=Decimal("12.0"),
+        )
+
+    with pytest.raises(ValidationError, match="reduced_rest_min_avg_h must be greater than"):
+        LegalRuleSet(
+            preset_type=LegalPresetType.CUSTOM_CCT,
+            max_weekly_hours=Decimal("45.0"),
+            min_reduced_rest_h=Decimal("9.0"),
+            reduced_rest_avg_window_days=14,
+            reduced_rest_min_avg_h=Decimal("8.5"),
         )
 
 

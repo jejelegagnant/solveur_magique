@@ -9,7 +9,7 @@ from uuid import UUID
 from pydantic import Field, field_validator, model_validator
 
 from solver_core.schemas.common import StrictBaseModel
-from solver_core.schemas.shifts import ShiftSegment
+from solver_core.schemas.shifts import ShiftSegment, validate_segments_chronology
 
 
 class DoublureConfig(StrictBaseModel):
@@ -98,6 +98,8 @@ class PriorDayRecord(StrictBaseModel):
             if self.is_sunday_worked_over_5h:
                 msg = "PriorDayRecord with is_rest_day=True cannot have is_sunday_worked_over_5h."
                 raise ValueError(msg)
+        elif self.segments:
+            validate_segments_chronology(self.segments, context="PriorDayRecord")
         return self
 
 

@@ -138,7 +138,15 @@ class ScheduleSolution(StrictBaseModel):
 
 
 class SolverOutput(StrictBaseModel):
-    """Root deterministic output returned by solver_core (FR-027, FR-030, NFR-020)."""
+    """Root deterministic output returned by solver_core (FR-027, FR-030, NFR-020).
+
+    Status semantics aligned with OR-Tools CP-SAT and FR-027 / NFR-002:
+    - ``OPTIMAL`` / ``FEASIBLE``: at least one schedule solution (including graceful
+      incumbent solutions returned when the wall-clock timeout is reached).
+    - ``INFEASIBLE``: proven infeasible with one or more localized ``conflict_cards``.
+    - ``TIMEOUT``: wall-clock timeout reached with zero feasible incumbent found.
+    - ``ERROR``: internal failure accompanied by a non-empty ``error_message``.
+    """
 
     period_id: UUID
     status: SolverStatus

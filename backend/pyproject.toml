@@ -61,10 +61,6 @@ warn_unused_configs = true
 disallow_any_generics = true
 plugins = ["pydantic.mypy"]
 
-[[tool.mypy.overrides]]
-module = ["holidays.*", "ortools.*"]
-ignore_missing_imports = true
-
 [tool.importlinter]
 root_package = "solver_core"
 include_external_packages = true

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date, time
 from decimal import Decimal
 from uuid import UUID
@@ -15,6 +16,30 @@ _MICROSECONDS_PER_DAY = 24 * 60 * 60 * 1_000_000
 
 def _time_to_microseconds(t: time) -> int:
     return ((t.hour * 3600 + t.minute * 60 + t.second) * 1_000_000) + t.microsecond
+
+
+def validate_segments_chronology(
+    segments: Sequence[ShiftSegment],
+    *,
+    context: str,
+) -> None:
+    """Validate segments are ordered, non-overlapping, and at most the final crosses midnight."""
+    last_idx = len(segments) - 1
+    prev_end_us: int | None = None
+
+    for idx, seg in enumerate(segments):
+        if seg.crosses_midnight and idx != last_idx:
+            msg = f"Only the final segment of a {context} may cross midnight."
+            raise ValueError(msg)
+
+        start_us = _time_to_microseconds(seg.start_time)
+        end_us = _time_to_microseconds(seg.end_time) + (
+            _MICROSECONDS_PER_DAY if seg.crosses_midnight else 0
+        )
+        if prev_end_us is not None and start_us < prev_end_us:
+            msg = f"{context} segments must be in chronological order with zero overlap."
+            raise ValueError(msg)
+        prev_end_us = end_us
 
 
 class ShiftSegment(StrictBaseModel):
@@ -62,23 +87,7 @@ class ShiftTemplate(StrictBaseModel):
 
     @model_validator(mode="after")
     def _validate_segments_chronology(self) -> ShiftTemplate:
-        last_idx = len(self.segments) - 1
-        prev_end_us: int | None = None
-
-        for idx, seg in enumerate(self.segments):
-            if seg.crosses_midnight and idx != last_idx:
-                msg = "Only the final segment of a ShiftTemplate may cross midnight."
-                raise ValueError(msg)
-
-            start_us = _time_to_microseconds(seg.start_time)
-            end_us = _time_to_microseconds(seg.end_time) + (
-                _MICROSECONDS_PER_DAY if seg.crosses_midnight else 0
-            )
-            if prev_end_us is not None and start_us < prev_end_us:
-                msg = "ShiftTemplate segments must be in chronological order with zero overlap."
-                raise ValueError(msg)
-            prev_end_us = end_us
-
+        validate_segments_chronology(self.segments, context="ShiftTemplate")
         return self
 
 
