@@ -9,14 +9,12 @@ description = "Pure-Python Swiss shift-scheduling CP-SAT solver core (zero web/O
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.10,<3.0",
+    "ortools>=9.11",
     "holidays>=0.60",
     "tzdata>=2024.2",
 ]
 
 [project.optional-dependencies]
-solver = [
-    "ortools>=9.11",
-]
 dev = [
     "pytest>=8.3",
     "hypothesis>=6.112",
@@ -44,6 +42,7 @@ markers = [
     "property: Hypothesis property-based invariant test (NFR-019)",
     "dst: Europe/Zurich daylight saving time transition test (NFR-024)",
     "architecture: Architectural boundary & coupling check (NFR-020)",
+    "benchmark: CP-SAT performance benchmark test (NFR-001)",
 ]
 
 [tool.ruff]
@@ -60,6 +59,10 @@ strict = true
 warn_unused_configs = true
 disallow_any_generics = true
 plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["holidays.*", "ortools.*"]
+ignore_missing_imports = true
 
 [tool.importlinter]
 root_package = "solver_core"

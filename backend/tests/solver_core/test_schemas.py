@@ -41,7 +41,6 @@ from solver_core import (
     SolverStatus,
     build_preset,
     explain_infeasibility,
-    solve_schedule,
 )
 
 # ---------------------------------------------------------------------------
@@ -1135,14 +1134,11 @@ def test_output_submodel_invariants() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Entry-point stubs (Issues #3 & #6)
+# Entry-point stubs (Issue #6)
 # ---------------------------------------------------------------------------
 
 
 def test_entry_point_stubs_raise_not_implemented(tilleuls_solver_input: SolverInput) -> None:
-    """solve_schedule and explain_infeasibility raise NotImplementedError until Issues #3 & #6."""
-    with pytest.raises(NotImplementedError, match="Issue #3"):
-        solve_schedule(tilleuls_solver_input)
-
+    """explain_infeasibility raises NotImplementedError until Issue #6."""
     with pytest.raises(NotImplementedError, match="Issue #6"):
         explain_infeasibility(tilleuls_solver_input, ["assump_1"], locale=Locale.FR_CH)
